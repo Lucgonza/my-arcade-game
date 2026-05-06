@@ -14,6 +14,7 @@ MIN_SPEED = 40
 SCROLL_SPEED = 350
 INITIAL_START_X = 120
 USABLE_WIDTH = WIDTH - INITIAL_START_X  # 680px of playable space after start
+STAR_TILE = 1600   # tile width for star wrapping
 
 BLACK  = (0, 0, 0)
 WHITE  = (255, 255, 255)
@@ -194,6 +195,30 @@ def draw_arrow(screen, ball_sp, mouse_pos):
     pygame.draw.rect(screen, bar_color, (bx, by, int(ratio * bw), bh))
 
 
+STAR_LAYERS = [
+    {"factor": 0.05, "count": 120, "size": 1, "brightness": 100},  # far, slow
+    {"factor": 0.15, "count":  70, "size": 1, "brightness": 180},  # mid
+    {"factor": 0.30, "count":  30, "size": 2, "brightness": 255},  # near, fast
+]
+
+def generate_stars():
+    for layer in STAR_LAYERS:
+        layer["stars"] = [
+            (random.randint(0, STAR_TILE), random.randint(0, HEIGHT))
+            for _ in range(layer["count"])
+        ]
+
+def draw_stars(screen, camera_x):
+    for layer in STAR_LAYERS:
+        color = (layer["brightness"],) * 3
+        for (wx, wy) in layer["stars"]:
+            sx = int(wx - camera_x * layer["factor"]) % STAR_TILE
+            if layer["size"] == 1:
+                if 0 <= sx < WIDTH:
+                    screen.set_at((sx, wy), color)
+            else:
+                pygame.draw.circle(screen, color, (sx, wy), layer["size"])
+
 def main():
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -203,6 +228,7 @@ def main():
     small = pygame.font.SysFont(None, 24)
 
     planets       = initial_planets()
+    generate_stars()
     ball          = Ball(planets)
     camera_x      = 0.0
     scroll_target = 0.0
@@ -298,6 +324,7 @@ def main():
 
         # --- Draw ---
         screen.fill(BLACK)
+        draw_stars(screen, camera_x)
 
         for i, p in enumerate(planets):
             sx = int(p["pos"][0] - camera_x)

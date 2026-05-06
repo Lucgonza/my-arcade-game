@@ -9,6 +9,8 @@ G = 500
 BALL_RADIUS = 6
 MIN_GAP = 40
 MAX_DRAG = 150  # pixels = max power
+BOUNCE_DAMPING = 0.55   # energy kept after each bounce (0=dead stop, 1=infinite bounce)
+MIN_SPEED      = 40     # below this speed, ball lands
 
 BLACK  = (0, 0, 0)
 WHITE  = (255, 255, 255)
@@ -161,6 +163,21 @@ def draw_arrow(screen, ball_pos, mouse_pos):
     bar_color = GREEN if power_ratio < 0.7 else (255, 165, 0) if power_ratio < 0.9 else (220, 80, 80)
     pygame.draw.rect(screen, bar_color, (bx2, by2, fill, bh))
 
+def draw_flag(screen, planet):
+    cx, cy = planet["pos"]
+    r = planet["radius"]
+    # Pole starts at top of planet
+    pole_x = cx
+    pole_bottom = cy - r
+    pole_top    = cy - r - 28
+    pygame.draw.line(screen, WHITE, (pole_x, pole_bottom), (pole_x, pole_top), 2)
+    # Flag triangle
+    pygame.draw.polygon(screen, (220, 80, 80), [
+        (pole_x,      pole_top),
+        (pole_x + 14, pole_top + 7),
+        (pole_x,      pole_top + 14),
+    ])
+
 def main():
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -218,18 +235,40 @@ def main():
 
         if ball.launched:
             hit = ball.check_collision(planets)
-            if hit == target_idx:
-                level += 1
-                new_start = make_planet(planets[target_idx]["pos"], 25, (100, 149, 237))
-                planets = generate_level(new_start)
-                ball.pos = list(new_start["pos"])
-                ball.land_on(planets, 0)
-                message = f"Level {level}!  Total shots: {shots}"
-                msg_timer = 3.0
-            elif hit is not None:
-                ball.land_on(planets, hit)
-                message = f"Landed on planet {hit + 1}"
-                msg_timer = 1.0
+            if hit is not None:
+                p = planets[hit]
+                # Surface normal: from planet center to ball
+                nx = ball.pos[0] - p["pos"][0]
+                ny = ball.pos[1] - p["pos"][1]
+                length = math.hypot(nx, ny)
+                nx /= length
+                ny /= length
+
+                # Push ball exactly to surface (avoids tunneling)
+                r = p["radius"] + BALL_RADIUS
+                ball.pos[0] = p["pos"][0] + nx * r
+                ball.pos[1] = p["pos"][1] + ny * r
+
+                # Reflect velocity off surface normal + apply damping
+                dot = ball.vel[0] * nx + ball.vel[1] * ny
+                ball.vel[0] = (ball.vel[0] - 2 * dot * nx) * BOUNCE_DAMPING
+                ball.vel[1] = (ball.vel[1] - 2 * dot * ny) * BOUNCE_DAMPING
+
+                speed = math.hypot(ball.vel[0], ball.vel[1])
+                if speed < MIN_SPEED:
+                    if hit == target_idx:
+                        level += 1
+                        new_start = make_planet(planets[target_idx]["pos"], 25, (100, 149, 237))
+                        planets = generate_level(new_start)
+                        ball.pos = list(new_start["pos"])
+                        ball.land_on(planets, 0)
+                        message = f"Level {level}!  Total shots: {shots}"
+                        msg_timer = 3.0
+                    else:
+                        ball.land_on(planets, hit)
+                        message = f"Landed on planet {hit + 1}"
+                        msg_timer = 1.0
+
             elif ball.out_of_bounds():
                 ball.go_to_start(planets)
                 message = "Out of bounds — back to start!"
@@ -244,6 +283,8 @@ def main():
             pygame.draw.circle(screen, p["color"], p["pos"], p["radius"])
             if i == target_idx or i == 0:
                 pygame.draw.circle(screen, WHITE, p["pos"], p["radius"], 2)
+            if i == target_idx:
+                draw_flag(screen, p)
 
         ball.draw(screen)
 

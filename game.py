@@ -8,11 +8,12 @@ FPS = 60
 G = 500
 BALL_RADIUS = 6
 MIN_GAP = 40
+MAX_DRAG = 150  # pixels = max power
 
 BLACK  = (0, 0, 0)
 WHITE  = (255, 255, 255)
-GREEN  = (0, 200, 0)
 YELLOW = (255, 215, 0)
+GREEN  = (0, 200, 0)
 
 OBSTACLE_COLORS = [
     (150, 150, 150),
@@ -34,7 +35,6 @@ def generate_level(start_planet):
     planets = [start_planet]
     colors = OBSTACLE_COLORS[:]
     random.shuffle(colors)
-
     for i in range(random.randint(1, 4)):
         for _ in range(200):
             r = random.randint(35, 80)
@@ -42,30 +42,26 @@ def generate_level(start_planet):
             y = random.randint(r + 20, HEIGHT - r - 20)
             c = make_planet((x, y), r, colors[i % len(colors)])
             if not any(overlaps(c, p) for p in planets):
-                planets.append(c)
-                break
-
+                planets.append(c); break
     for _ in range(500):
         r = 25
         x = random.randint(r + 20, WIDTH  - r - 20)
         y = random.randint(r + 20, HEIGHT - r - 20)
         c = make_planet((x, y), r, (220, 80, 80))
         if not any(overlaps(c, p) for p in planets):
-            planets.append(c)
-            break
-
+            planets.append(c); break
     return planets
 
 def initial_planets():
-    start = make_planet((120, 480), 25, (100, 149, 237))
-    obs1  = make_planet((330, 280), 50, (150, 150, 150))
-    obs2  = make_planet((560, 400), 70, (150, 80,  200))
-    target= make_planet((680, 120), 25, (220, 80,  80))
+    start  = make_planet((120, 480), 25, (100, 149, 237))
+    obs1   = make_planet((330, 280), 50, (150, 150, 150))
+    obs2   = make_planet((560, 400), 70, (150, 80,  200))
+    target = make_planet((680, 120), 25, (220, 80,  80))
     return [start, obs1, obs2, target]
 
 class Ball:
     def __init__(self, planets):
-        self.current_planet = 0
+        self.pos = [0.0, 0.0]
         self.land_on(planets, 0)
 
     def land_on(self, planets, idx):
@@ -73,21 +69,20 @@ class Ball:
         self.vel = [0.0, 0.0]
         self.current_planet = idx
         p = planets[idx]
-        dx = self.pos[0] - p["pos"][0] if hasattr(self, "pos") else 0
-        dy = self.pos[1] - p["pos"][1] if hasattr(self, "pos") else -1
+        dx = self.pos[0] - p["pos"][0]
+        dy = self.pos[1] - p["pos"][1]
         self.surface_angle = math.atan2(dy, dx) if (dx or dy) else -math.pi / 2
         r = p["radius"] + BALL_RADIUS
         self.pos = [p["pos"][0] + r * math.cos(self.surface_angle),
                     p["pos"][1] + r * math.sin(self.surface_angle)]
 
     def go_to_start(self, planets):
-        self.pos = [0.0, 0.0]
+        self.pos = list(planets[0]["pos"])
         self.land_on(planets, 0)
 
     def launch(self, direction, power):
-        angle = self.surface_angle + direction * math.pi / 4
-        speed = power * 4
-        self.vel = [speed * math.cos(angle), speed * math.sin(angle)]
+        speed = (power / MAX_DRAG) * 400
+        self.vel = [direction[0] * speed, direction[1] * speed]
         self.launched = True
 
     def update(self, dt, planets):
@@ -116,33 +111,72 @@ class Ball:
         return (self.pos[0] < -100 or self.pos[0] > WIDTH  + 100 or
                 self.pos[1] < -100 or self.pos[1] > HEIGHT + 100)
 
+    def is_clicked(self, mouse_pos):
+        return math.hypot(mouse_pos[0] - self.pos[0],
+                          mouse_pos[1] - self.pos[1]) <= BALL_RADIUS + 10
+
     def draw(self, screen):
         pygame.draw.circle(screen, YELLOW,
                            (int(self.pos[0]), int(self.pos[1])), BALL_RADIUS)
 
-def draw_power_bar(screen, power):
-    bx, by, bw, bh = 20, HEIGHT - 40, 200, 20
-    pygame.draw.rect(screen, WHITE, (bx, by, bw, bh), 2)
-    fill  = int(power / 100 * bw)
-    color = GREEN if power < 70 else (255, 165, 0) if power < 90 else (220, 80, 80)
-    pygame.draw.rect(screen, color, (bx, by, fill, bh))
+def draw_arrow(screen, ball_pos, mouse_pos):
+    dx = mouse_pos[0] - ball_pos[0]
+    dy = mouse_pos[1] - ball_pos[1]
+    dist = math.hypot(dx, dy)
+    if dist < 5:
+        return
+
+    power_ratio = min(dist, MAX_DRAG) / MAX_DRAG
+    capped_x = ball_pos[0] + (dx / dist) * min(dist, MAX_DRAG)
+    capped_y = ball_pos[1] + (dy / dist) * min(dist, MAX_DRAG)
+
+    # Color: green → orange → red based on power
+    r = int(255 * power_ratio)
+    g = int(255 * (1 - power_ratio))
+    color = (r, g, 0)
+
+    # Shaft
+    pygame.draw.line(screen, color,
+                     (int(ball_pos[0]), int(ball_pos[1])),
+                     (int(capped_x), int(capped_y)), 2)
+
+    # Arrowhead
+    angle = math.atan2(dy, dx)
+    head_len = 12
+    head_angle = 0.4
+    ax = capped_x - head_len * math.cos(angle - head_angle)
+    ay = capped_y - head_len * math.sin(angle - head_angle)
+    bx = capped_x - head_len * math.cos(angle + head_angle)
+    by = capped_y - head_len * math.sin(angle + head_angle)
+    pygame.draw.polygon(screen, color, [
+        (int(capped_x), int(capped_y)),
+        (int(ax), int(ay)),
+        (int(bx), int(by))
+    ])
+
+    # Power bar
+    bx2, by2, bw, bh = 20, HEIGHT - 40, 200, 20
+    pygame.draw.rect(screen, WHITE, (bx2, by2, bw, bh), 2)
+    fill = int(power_ratio * bw)
+    bar_color = GREEN if power_ratio < 0.7 else (255, 165, 0) if power_ratio < 0.9 else (220, 80, 80)
+    pygame.draw.rect(screen, bar_color, (bx2, by2, fill, bh))
 
 def main():
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     pygame.display.set_caption("Space Golf")
-    clock  = pygame.time.Clock()
-    font   = pygame.font.SysFont(None, 36)
-    small  = pygame.font.SysFont(None, 24)
+    clock = pygame.time.Clock()
+    font  = pygame.font.SysFont(None, 36)
+    small = pygame.font.SysFont(None, 24)
 
-    planets = initial_planets()
-    ball    = Ball(planets)
-    power   = 0.0
-    charging= False
-    shots   = 0
-    level   = 1
-    message = ""
-    msg_timer = 0.0
+    planets  = initial_planets()
+    ball     = Ball(planets)
+    dragging = False
+    mouse_pos= (0, 0)
+    shots    = 0
+    level    = 1
+    message  = ""
+    msg_timer= 0.0
 
     while True:
         dt = clock.tick(FPS) / 1000.0
@@ -151,25 +185,34 @@ def main():
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit(); sys.exit()
+
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if not ball.launched and ball.is_clicked(event.pos):
+                    dragging = True
+                    mouse_pos = event.pos
+
+            if event.type == pygame.MOUSEMOTION:
+                if dragging:
+                    mouse_pos = event.pos
+
+            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                if dragging and not ball.launched:
+                    dx = mouse_pos[0] - ball.pos[0]
+                    dy = mouse_pos[1] - ball.pos[1]
+                    dist = math.hypot(dx, dy)
+                    if dist > 5:
+                        power = min(dist, MAX_DRAG)
+                        direction = (dx / dist, dy / dist)
+                        ball.launch(direction, power)
+                        shots += 1
+                dragging = False
+
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_SPACE and not ball.launched:
-                    charging = True
                 if event.key == pygame.K_r:
                     planets = initial_planets()
                     ball = Ball(planets)
-                    power = 0.0; charging = False
-                    shots = 0;   level = 1; message = ""
-            if event.type == pygame.KEYUP:
-                if event.key == pygame.K_SPACE:
-                    charging = False
-                if not ball.launched and power > 0:
-                    if event.key == pygame.K_LEFT:
-                        ball.launch(-1, power); shots += 1; power = 0.0
-                    elif event.key == pygame.K_RIGHT:
-                        ball.launch( 1, power); shots += 1; power = 0.0
-
-        if charging and not ball.launched:
-            power = min(100.0, power + 60 * dt)
+                    dragging = False; shots = 0
+                    level = 1; message = ""
 
         ball.update(dt, planets)
 
@@ -177,8 +220,7 @@ def main():
             hit = ball.check_collision(planets)
             if hit == target_idx:
                 level += 1
-                new_start = make_planet(planets[target_idx]["pos"],
-                                        25, (100, 149, 237))
+                new_start = make_planet(planets[target_idx]["pos"], 25, (100, 149, 237))
                 planets = generate_level(new_start)
                 ball.pos = list(new_start["pos"])
                 ball.land_on(planets, 0)
@@ -196,19 +238,20 @@ def main():
         if msg_timer > 0:
             msg_timer -= dt
 
+        # Draw
         screen.fill(BLACK)
         for i, p in enumerate(planets):
             pygame.draw.circle(screen, p["color"], p["pos"], p["radius"])
-            if i == target_idx:
-                pygame.draw.circle(screen, WHITE, p["pos"], p["radius"], 2)
-            if i == 0:
+            if i == target_idx or i == 0:
                 pygame.draw.circle(screen, WHITE, p["pos"], p["radius"], 2)
 
         ball.draw(screen)
 
-        if not ball.launched:
-            draw_power_bar(screen, power)
-            hint = small.render("SPACE: charge | LEFT/RIGHT: launch | R: restart", True, WHITE)
+        if dragging and not ball.launched:
+            draw_arrow(screen, ball.pos, mouse_pos)
+
+        if not ball.launched and not dragging:
+            hint = small.render("Click ball and drag to aim — release to shoot | R: restart", True, WHITE)
             screen.blit(hint, (20, HEIGHT - 65))
 
         screen.blit(font.render(f"Level: {level}  Shots: {shots}", True, WHITE), (10, 10))

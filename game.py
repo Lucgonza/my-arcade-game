@@ -2,6 +2,7 @@ import pygame
 import math
 import sys
 import random
+import array
 
 WIDTH, HEIGHT = 800, 600
 FPS = 60
@@ -12,9 +13,10 @@ MAX_DRAG = 150
 BOUNCE_DAMPING = 0.55
 MIN_SPEED = 40
 SCROLL_SPEED = 350
-INITIAL_START_X = 120
+INITIAL_START_X = 180
 USABLE_WIDTH = WIDTH - INITIAL_START_X  # 680px of playable space after start
 STAR_TILE = 1600   # tile width for star wrapping
+FX_MIN_SPEED = 80   # below this speed, no FX on bounce
 
 BLACK  = (0, 0, 0)
 WHITE  = (255, 255, 255)
@@ -72,6 +74,43 @@ def initial_planets():
     target = make_planet((680, 120), 25, (220, 80,  80))
     target["mass"] = 4000
     return [start, obs1, obs2, target]
+
+def make_tone(freq, duration, volume=0.4, decay=20):
+    sample_rate = 44100
+    n = int(sample_rate * duration)
+    buf = array.array('h')
+    for i in range(n):
+        t = i / sample_rate
+        v = int(32767 * volume * math.sin(2 * math.pi * freq * t) * math.exp(-decay * t))
+        buf.append(v); buf.append(v)
+    return pygame.mixer.Sound(buffer=buf)
+
+class Particle:
+    def __init__(self, pos, normal):
+        angle = math.atan2(normal[1], normal[0]) + random.uniform(-1.0, 1.0)
+        speed = random.uniform(40, 130)
+        self.pos = list(pos)
+        self.vel = [math.cos(angle) * speed, math.sin(angle) * speed]
+        self.lifetime = random.uniform(0.3, 0.6)
+        self.max_life  = self.lifetime
+        self.radius    = random.randint(1, 3)
+        self.base_color= random.choice([(210,185,140),(230,205,160),(190,165,120)])
+
+    def update(self, dt):
+        self.pos[0] += self.vel[0] * dt
+        self.pos[1] += self.vel[1] * dt
+        self.lifetime -= dt
+
+    def alive(self):
+        return self.lifetime > 0
+
+    def draw(self, screen, camera_x):
+        ratio = self.lifetime / self.max_life
+        color = tuple(max(0, min(255, int(c * ratio))) for c in self.base_color)
+        sx = int(self.pos[0] - camera_x)
+        sy = int(self.pos[1])
+        if 0 <= sx <= WIDTH:
+            pygame.draw.circle(screen, color, (sx, sy), self.radius)
 
 
 class Ball:
@@ -223,6 +262,10 @@ def draw_stars(screen, camera_x):
 
 def main():
     pygame.init()
+    pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+    snd_bounce = make_tone(180, 0.25, volume=0.4, decay=18)
+    snd_hit    = make_tone(420, 0.12, volume=0.5, decay=35)
+    particles = []
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     pygame.display.set_caption("Space Golf")
     clock = pygame.time.Clock()
@@ -273,6 +316,7 @@ def main():
                         if dist > 5:
                             ball.launch((dx / dist, dy / dist), min(dist, MAX_DRAG))
                             shots += 1
+                            snd_hit.play()
                     dragging = False
 
         # --- Update ---
@@ -283,6 +327,9 @@ def main():
 
         elif state == STATE_PLAYING:
             ball.update(dt, planets, camera_x)
+            particles = [p for p in particles if p.alive()]
+            for p in particles:
+                p.update(dt)
 
             if ball.launched:
                 hit = ball.check_collision(planets)
@@ -299,6 +346,11 @@ def main():
                     dot = ball.vel[0] * nx + ball.vel[1] * ny
                     ball.vel[0] = (ball.vel[0] - 2 * dot * nx) * BOUNCE_DAMPING
                     ball.vel[1] = (ball.vel[1] - 2 * dot * ny) * BOUNCE_DAMPING
+                    speed_before = math.hypot(ball.vel[0], ball.vel[1])
+                    if speed_before > FX_MIN_SPEED:
+                        for _ in range(12):
+                            particles.append(Particle(ball.pos[:], (nx, ny)))
+                        snd_bounce.play()
 
                     if math.hypot(ball.vel[0], ball.vel[1]) < MIN_SPEED:
                         landing_angle = math.atan2(ny, nx)
@@ -327,6 +379,8 @@ def main():
         # --- Draw ---
         screen.fill(BLACK)
         draw_stars(screen, camera_x)
+        for p in particles:
+            p.draw(screen, camera_x)
 
         for i, p in enumerate(planets):
             sx = int(p["pos"][0] - camera_x)

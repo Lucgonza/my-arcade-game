@@ -265,6 +265,7 @@ def main():
     pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
     snd_bounce = make_tone(180, 0.25, volume=0.4, decay=18)
     snd_hit    = make_tone(420, 0.12, volume=0.5, decay=35)
+    snd_ding = make_tone(880, 0.6, volume=0.5, decay=5)
     particles = []
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     pygame.display.set_caption("Space Golf")
@@ -355,6 +356,7 @@ def main():
                     if math.hypot(ball.vel[0], ball.vel[1]) < MIN_SPEED:
                         landing_angle = math.atan2(ny, nx)
                         if hit == target_idx:
+                            snd_ding.play()
                             level    += 1
                             new_start = make_planet(planets[target_idx]["pos"], 25, (100, 149, 237))
                             planets   = generate_level(new_start)

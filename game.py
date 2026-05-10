@@ -59,6 +59,7 @@ def generate_level(start_planet):
         x = base_x + random.randint(USABLE_WIDTH // 2, USABLE_WIDTH - r - 20)
         y = random.randint(r + 20, HEIGHT - r - 20)
         c = make_planet((x, y), r, (220, 80, 80))
+        c["mass"] = 4000   # strong pull regardless of size
         if not any(overlaps(c, p) for p in planets):
             planets.append(c); break
 
@@ -69,6 +70,7 @@ def initial_planets():
     obs1   = make_planet((330, 280), 50, (150, 150, 150))
     obs2   = make_planet((560, 400), 70, (150, 80,  200))
     target = make_planet((680, 120), 25, (220, 80,  80))
+    target["mass"] = 4000
     return [start, obs1, obs2, target]
 
 

@@ -9,15 +9,15 @@ FLOOR_Y       = 360          # y-coordinate of the floor
 
 BPM            = 100
 BEAT_DUR       = 60.0 / BPM  # 0.6 s per beat
-BEAT_BUFFER    = 0.18        # accept kick up to 180 ms BEFORE the beat
+BEAT_BUFFER    = 0.25        # accept kick up to 250 ms BEFORE the beat
 
 PLAYER_SPEED      = 120   # px / s  (auto-walk, world units)
-# Right enemy: slow walk from off-screen right  (needs more lead beats to cover ~450 px)
-ENEMY_R_SPEED     = 130   # px / s   130 × 6 beats × 0.6 s = 468 px  → just past right edge
-LEAD_BEATS_R      = 6
-# Left enemy: fast walk from off-screen left    (needs fewer lead beats, already fast)
-ENEMY_L_SPEED     = 200   # px / s   200 × 4 beats × 0.6 s = 480 px  → just past left edge
-LEAD_BEATS_L      = 4
+# Spawn offset target: just past screen edge (~430 px from player screen centre)
+# Right enemy screen speed = ENEMY_R_SPEED + PLAYER_SPEED  → world spawn offset = (R+P)*lead*T
+# Left  enemy screen speed = ENEMY_L_SPEED - PLAYER_SPEED  → world spawn offset = (L-P)*lead*T
+LEAD_BEATS        = 4                  # same for both sides
+ENEMY_R_SPEED     = 60    # px / s    (120+60)*4*0.6 = 432 px → screen_x ≈ 832  ✓
+ENEMY_L_SPEED     = 300   # px / s    (300-120)*4*0.6 = 432 px → screen_x ≈ -32 ✓
 GRAVITY           = 1800  # px / s²  — snappy, not floaty
 JUMP_VEL          = -360  # px / s  — roughly half the old height
 
@@ -47,21 +47,21 @@ DKGRAY = ( 30,  30,  45)
 # (arrival_beat, side)  — no two entries share a beat
 # Right enemies need arrival >= LEAD_BEATS_R+1 = 7, left >= LEAD_BEATS_L+1 = 5
 LEVEL_ENEMIES = [
-    ( 8, "right"),
-    (10, "left"),
-    (12, "right"),
-    (14, "left"),
-    (16, "right"),
-    (18, "left"),
-    (20, "right"),
-    (22, "left"),
-    (24, "right"),
-    (26, "left"),
-    (28, "right"),
-    (30, "left"),
+    ( 6, "right"),
+    ( 8, "left"),
+    (10, "right"),
+    (12, "left"),
+    (14, "right"),
+    (16, "left"),
+    (18, "right"),
+    (20, "left"),
+    (22, "right"),
+    (24, "left"),
+    (26, "right"),
+    (28, "left"),
 ]
 # beats where a spike sits exactly under the player — must jump on previous beat
-LEVEL_SPIKE_BEATS = {9, 17, 25}
+LEVEL_SPIKE_BEATS = set()  # disabled for now
 
 LAST_BEAT = max(b for b, _ in LEVEL_ENEMIES) + 4  # a few beats of grace after last enemy
 
@@ -84,7 +84,8 @@ def init_sounds():
     return {
         "tick":       pygame.sndarray.make_sound(_make_wave(220,  0.07, 0.12, _sine)),
         "beat":       pygame.sndarray.make_sound(_make_wave(440,  0.10, 0.22, _sine)),
-        "kick":       pygame.sndarray.make_sound(_make_wave(300,  0.05, 0.08, _sine)),   # subtle whoosh
+        "kick_l":     pygame.sndarray.make_sound(_make_wave(260,  0.05, 0.08, _sine)),   # subtle low whoosh
+        "kick_r":     pygame.sndarray.make_sound(_make_wave(340,  0.05, 0.08, _sine)),   # subtle high whoosh
         "enemy_die":  pygame.sndarray.make_sound(_make_wave(660,  0.18, 0.45, _square)), # punchy hit
         "damage":     pygame.sndarray.make_sound(_make_wave(110,  0.22, 0.38, _square)),
         "spike_dodge":pygame.sndarray.make_sound(_make_wave(550,  0.10, 0.20, _sine)),   # light ding
@@ -227,11 +228,14 @@ class Spike:
 
 
 # ── HUD ────────────────────────────────────────────────────────────────────────
-def draw_hud(surf, font, sm_font, player, pulse, beat_num):
+def draw_hud(surf, font, sm_font, player, pulse, beat_num, score):
     # HP pips
     for i in range(PLAYER_MAX_HP):
         c = GREEN if i < player.hp else DKGRAY
         pygame.draw.rect(surf, c, (20 + i * 38, 18, 28, 18), border_radius=3)
+
+    # Score
+    surf.blit(sm_font.render(f"SCORE  {score:05d}", True, YELLOW), (20, 44))
 
     # Beat metronome dot
     r = int(10 + pulse * 12)
@@ -275,6 +279,7 @@ def main():
 
     game_over = False
     win       = False
+    score     = 0
 
     while True:
         dt = clock.tick(FPS) / 1000.0
@@ -291,11 +296,11 @@ def main():
                     if event.key == pygame.K_z:
                         kick_l_time = total_time
                         player.kick("left")
-                        sounds["kick"].play()
+                        sounds["kick_l"].play()
                     if event.key == pygame.K_x:
                         kick_r_time = total_time
                         player.kick("right")
-                        sounds["kick"].play()
+                        sounds["kick_r"].play()
                     if event.key == pygame.K_SPACE:
                         player.try_jump()
 
@@ -319,12 +324,14 @@ def main():
                 # Spawn enemies whose arrival beat is LEAD_BEATS away
                 still_pending = []
                 for arrival_beat, side in pending:
-                    lead = LEAD_BEATS_R if side == "right" else LEAD_BEATS_L
-                    if beat_num == arrival_beat - lead:
+                    if beat_num == arrival_beat - LEAD_BEATS:
+                        T = LEAD_BEATS * BEAT_DUR
                         if side == "right":
-                            spawn_x = player.world_x + ENEMY_R_SPEED * lead * BEAT_DUR
+                            # enemy moves left, player moves right → closing speed = sum
+                            spawn_x = player.world_x + (PLAYER_SPEED + ENEMY_R_SPEED) * T
                         else:
-                            spawn_x = player.world_x - ENEMY_L_SPEED * lead * BEAT_DUR
+                            # enemy moves right, player moves right → closing speed = difference
+                            spawn_x = player.world_x - (ENEMY_L_SPEED - PLAYER_SPEED) * T
                         enemies.append(Enemy(spawn_x, side))
                     else:
                         still_pending.append((arrival_beat, side))
@@ -346,6 +353,7 @@ def main():
                         if kicked:
                             e.dying = Enemy.DYING_FRAMES
                             sounds["enemy_die"].play()
+                            score += 100
                         else:
                             player.take_damage()
                             sounds["damage"].play()
@@ -397,16 +405,18 @@ def main():
         player.draw(screen)
 
         # HUD
-        draw_hud(screen, font, sm_fnt, player, beat_pulse, beat_num)
+        draw_hud(screen, font, sm_fnt, player, beat_pulse, beat_num, score)
 
         # ── Game-over / win overlay ──────────────────────────────────────────
         if game_over:
             msg   = "YOU WIN!"   if win else "GAME OVER"
             color = GREEN        if win else RED
             txt   = font.render(msg, True, color)
-            screen.blit(txt, (WIDTH//2 - txt.get_width()//2, HEIGHT//2 - 30))
+            screen.blit(txt, (WIDTH//2 - txt.get_width()//2, HEIGHT//2 - 40))
+            sc    = sm_fnt.render(f"Score: {score:05d}", True, YELLOW)
+            screen.blit(sc,  (WIDTH//2 - sc.get_width()//2,  HEIGHT//2 + 5))
             hint  = sm_fnt.render("Press R to restart", True, WHITE)
-            screen.blit(hint, (WIDTH//2 - hint.get_width()//2, HEIGHT//2 + 20))
+            screen.blit(hint, (WIDTH//2 - hint.get_width()//2, HEIGHT//2 + 28))
 
         pygame.display.flip()
 

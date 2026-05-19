@@ -8,8 +8,9 @@ FPS           = 60
 FLOOR_Y       = 360          # y-coordinate of the floor
 
 BPM            = 100
-BEAT_DUR       = 60.0 / BPM  # 0.6 s per beat
-BEAT_BUFFER    = 0.25        # accept kick up to 250 ms BEFORE the beat
+BEAT_DUR       = 60.0 / BPM        # 0.6 s  per quarter note
+SUBDIV_DUR     = BEAT_DUR / 2      # 0.3 s  per eighth note (subdivision tick)
+BEAT_BUFFER    = 0.20              # accept kick within 200 ms of any subdivision
 
 PLAYER_SPEED      = 120   # px / s  (auto-walk, world units)
 # Spawn offset target: just past screen edge (~430 px from player screen centre)
@@ -43,27 +44,26 @@ GRAY   = ( 75,  75,  95)
 PURPLE = (150,  55, 200)
 DKGRAY = ( 30,  30,  45)
 
-# ── Level data ─────────────────────────────────────────────────────────────────
-# (arrival_beat, side)  — no two entries share a beat
-# Right enemies need arrival >= LEAD_BEATS_R+1 = 7, left >= LEAD_BEATS_L+1 = 5
-LEVEL_ENEMIES = [
-    ( 6, "right"),
-    ( 8, "left"),
-    (10, "right"),
-    (12, "left"),
-    (14, "right"),
-    (16, "left"),
-    (18, "right"),
-    (20, "left"),
-    (22, "right"),
-    (24, "left"),
-    (26, "right"),
-    (28, "left"),
-]
-# beats where a spike sits exactly under the player — must jump on previous beat
-LEVEL_SPIKE_BEATS = set()  # disabled for now
+# ── Level generation ───────────────────────────────────────────────────────────
+import random
 
-LAST_BEAT = max(b for b, _ in LEVEL_ENEMIES) + 4  # a few beats of grace after last enemy
+def generate_level(num_enemies=14, start_subdiv=12, min_gap=3, max_gap=9):
+    """
+    Arrivals in subdivision units (1 subdiv = 1 eighth note).
+    Even subdivisions = quarter-note beat, odd = off-beat eighth note.
+    min_gap=3 prevents two enemies closer than 1.5 beats.
+    """
+    enemies  = []
+    subdiv   = start_subdiv   # start_subdiv=12 → beat 6
+    for _ in range(num_enemies):
+        side = random.choice(["left", "right"])
+        enemies.append((subdiv, side))
+        subdiv += random.randint(min_gap, max_gap)
+    return enemies
+
+LEVEL_ENEMIES     = generate_level()
+LEVEL_SPIKE_BEATS = set()   # disabled for now
+LAST_BEAT         = max(b for b, _ in LEVEL_ENEMIES) + 4
 
 # ── Audio helpers ──────────────────────────────────────────────────────────────
 SAMPLE_RATE = 44100
@@ -84,8 +84,8 @@ def init_sounds():
     return {
         "tick":       pygame.sndarray.make_sound(_make_wave(220,  0.07, 0.12, _sine)),
         "beat":       pygame.sndarray.make_sound(_make_wave(440,  0.10, 0.22, _sine)),
-        "kick_l":     pygame.sndarray.make_sound(_make_wave(260,  0.05, 0.08, _sine)),   # subtle low whoosh
-        "kick_r":     pygame.sndarray.make_sound(_make_wave(340,  0.05, 0.08, _sine)),   # subtle high whoosh
+        "kick_l":     pygame.sndarray.make_sound(_make_wave(130,  0.08, 0.12, _square)),  # deep thud
+        "kick_r":     pygame.sndarray.make_sound(_make_wave(520,  0.06, 0.10, _sine)),    # sharp snap
         "enemy_die":  pygame.sndarray.make_sound(_make_wave(660,  0.18, 0.45, _square)), # punchy hit
         "damage":     pygame.sndarray.make_sound(_make_wave(110,  0.22, 0.38, _square)),
         "spike_dodge":pygame.sndarray.make_sound(_make_wave(550,  0.10, 0.20, _sine)),   # light ding
@@ -162,11 +162,19 @@ class Player:
 
 
 class Enemy:
-    def __init__(self, world_x, side):
-        self.world_x = float(world_x)
-        self.side    = side
-        self.alive   = True
-        self.dying   = 0    # countdown frames; enemy visible but flashing white
+    DYING_FRAMES = 72   # ~1.2 s at 60 fps
+
+    # colours: on-beat = orange, off-beat = purple
+    COLOR_ON  = (220, 130,  30)
+    COLOR_OFF = (160,  60, 210)
+
+    def __init__(self, world_x, side, arrival_subdiv):
+        self.world_x        = float(world_x)
+        self.side           = side
+        self.alive          = True
+        self.dying          = 0
+        self.arrival_subdiv = arrival_subdiv
+        self.on_beat        = (arrival_subdiv % 2 == 0)   # even = quarter note
 
     def update(self, dt):
         if self.side == "right":
@@ -176,8 +184,6 @@ class Enemy:
         if self.dying > 0:
             self.dying -= 1
 
-    DYING_FRAMES = 20   # total fade duration
-
     def draw(self, surf, cam_x):
         if not self.alive and self.dying == 0:
             return
@@ -185,18 +191,14 @@ class Enemy:
         if not (-80 < sx < WIDTH + 80):
             return
 
+        base = Enemy.COLOR_ON if self.on_beat else Enemy.COLOR_OFF
+
         if self.dying > 0:
-            # first 4 frames: white flash; rest: fade ORANGE → BLACK
-            t = self.dying / Enemy.DYING_FRAMES       # 1.0 → 0.0
-            if self.dying > Enemy.DYING_FRAMES - 4:
-                color = WHITE
-            else:
-                r = int(ORANGE[0] * t)
-                g = int(ORANGE[1] * t)
-                b = int(ORANGE[2] * t)
-                color = (r, g, b)
+            if (self.dying // 6) % 2 == 0:
+                return                    # blink off
+            color = WHITE if self.dying > Enemy.DYING_FRAMES - 4 else base
         else:
-            color = ORANGE
+            color = base
 
         sy = FLOOR_Y - ENEMY_H
         pygame.draw.rect(surf, color, (sx - ENEMY_W//2, sy, ENEMY_W, ENEMY_H),
@@ -244,7 +246,7 @@ def draw_hud(surf, font, sm_font, player, pulse, beat_num, score):
     pygame.draw.circle(surf, WHITE, (WIDTH - 35, 28), 14, 2)
 
     # Beat label
-    surf.blit(sm_font.render(f"beat {beat_num}", True, GRAY), (WIDTH - 115, 46))
+    surf.blit(sm_font.render(f"beat {beat_num // 2}", True, GRAY), (WIDTH - 115, 46))
 
     # Controls
     surf.blit(sm_font.render("Z: left kick   X: right kick   SPACE: jump", True, GRAY),
@@ -262,10 +264,12 @@ def main():
 
     sounds = init_sounds()
 
-    # Enemies spawn dynamically at the right beat, not all upfront
-    pending  = list(LEVEL_ENEMIES)   # (arrival_beat, side) not yet spawned
-    enemies  = []                    # active Enemy objects
-    spikes   = [Spike(calc_spike_world_x(b)) for b in LEVEL_SPIKE_BEATS]
+    # New pattern every run
+    level   = generate_level()
+    last_b  = max(s for s, _ in level) + 8   # 4 quarter beats grace in subdivisions
+    pending = list(level)
+    enemies = []
+    spikes  = [Spike(calc_spike_world_x(b)) for b in LEVEL_SPIKE_BEATS]
 
     player     = Player()
     beat_timer = 0.0
@@ -311,54 +315,53 @@ def main():
                 if e.alive:
                     e.update(dt)
 
-            # ── Beat tick ───────────────────────────────────────────────────
+            # ── Subdivision tick (eighth-note grid) ─────────────────────────
             beat_timer += dt
-            if beat_timer >= BEAT_DUR:
-                beat_timer -= BEAT_DUR
-                beat_num   += 1
-                beat_pulse  = 1.0
+            if beat_timer >= SUBDIV_DUR:
+                beat_timer -= SUBDIV_DUR
+                beat_num   += 1          # counts eighth notes now
 
-                is_down = (beat_num % 4 == 1)
-                sounds["beat" if is_down else "tick"].play()
+                is_quarter = (beat_num % 2 == 0)
+                if is_quarter:
+                    beat_pulse = 1.0
+                    is_down    = (beat_num % 8 == 0)
+                    sounds["beat" if is_down else "tick"].play()
 
-                # Spawn enemies whose arrival beat is LEAD_BEATS away
+                # Spawn enemies due on this subdivision
+                LEAD_SUBDIVS = LEAD_BEATS * 2   # 4 quarter beats = 8 eighth notes
+                T = LEAD_SUBDIVS * SUBDIV_DUR   # travel time (same 2.4 s)
                 still_pending = []
-                for arrival_beat, side in pending:
-                    if beat_num == arrival_beat - LEAD_BEATS:
-                        T = LEAD_BEATS * BEAT_DUR
+                for arrival_subdiv, side in pending:
+                    if beat_num == arrival_subdiv - LEAD_SUBDIVS:
                         if side == "right":
-                            # enemy moves left, player moves right → closing speed = sum
                             spawn_x = player.world_x + (PLAYER_SPEED + ENEMY_R_SPEED) * T
                         else:
-                            # enemy moves right, player moves right → closing speed = difference
                             spawn_x = player.world_x - (ENEMY_L_SPEED - PLAYER_SPEED) * T
-                        enemies.append(Enemy(spawn_x, side))
+                        enemies.append(Enemy(spawn_x, side, arrival_subdiv))
                     else:
-                        still_pending.append((arrival_beat, side))
+                        still_pending.append((arrival_subdiv, side))
                 pending = still_pending
 
                 # Did player kick recently enough?
                 kick_l_valid = (0 < total_time - kick_l_time < BEAT_BUFFER)
                 kick_r_valid = (0 < total_time - kick_r_time < BEAT_BUFFER)
 
-                # Check enemies in hit zone
+                # Resolve enemies only on their exact arrival subdivision (fixes early-hit bug)
                 for e in enemies:
-                    if not e.alive:
+                    if not e.alive or beat_num != e.arrival_subdiv:
                         continue
-                    dist = abs(e.world_x - player.world_x)
-                    if dist < HIT_RANGE:
-                        e.alive = False
-                        kicked = (e.side == "right" and kick_r_valid) or \
-                                 (e.side == "left"  and kick_l_valid)
-                        if kicked:
-                            e.dying = Enemy.DYING_FRAMES
-                            sounds["enemy_die"].play()
-                            score += 100
-                        else:
-                            player.take_damage()
-                            sounds["damage"].play()
-                            if player.hp <= 0:
-                                game_over = True
+                    e.alive = False
+                    kicked = (e.side == "right" and kick_r_valid) or \
+                             (e.side == "left"  and kick_l_valid)
+                    if kicked:
+                        e.dying = Enemy.DYING_FRAMES
+                        sounds["enemy_die"].play()
+                        score += 100
+                    else:
+                        player.take_damage()
+                        sounds["damage"].play()
+                        if player.hp <= 0:
+                            game_over = True
 
                 # Check spike on this beat (player must be in the air)
                 if beat_num in LEVEL_SPIKE_BEATS:
@@ -375,7 +378,7 @@ def main():
                 kick_r_time = -999.0
 
                 # Win condition
-                if beat_num >= LAST_BEAT and not pending and all(not e.alive for e in enemies):
+                if beat_num >= last_b and not pending and all(not e.alive for e in enemies):
                     win = game_over = True
 
         # Beat pulse decay

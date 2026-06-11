@@ -19,8 +19,12 @@ PLAYER_SPEED      = 120   # px / s  (auto-walk, world units)
 LEAD_BEATS        = 4                  # same for both sides
 ENEMY_R_SPEED     = 60    # px / s    (120+60)*4*0.6 = 432 px → screen_x ≈ 832  ✓
 ENEMY_L_SPEED     = 300   # px / s    (300-120)*4*0.6 = 432 px → screen_x ≈ -32 ✓
+# Low runner: short and fast — must be jumped over
+LOW_R_SPEED       = 160   # px / s   closing (120+160)=280 → spawns 672 px right
+LOW_L_SPEED       = 400   # px / s   closing (400-120)=280 → spawns 672 px left
+LOW_W, LOW_H      = 34, 24
 GRAVITY           = 1800  # px / s²  — snappy, not floaty
-JUMP_VEL          = -360  # px / s  — roughly half the old height
+JUMP_VEL          = -400  # px / s   apex = 400²/(2·1800) ≈ 44 px > LOW_H=24 ✓, airtime ≈ 0.44 s
 
 PLAYER_W, PLAYER_H = 28, 50
 ENEMY_W,  ENEMY_H  = 28, 50
@@ -51,19 +55,18 @@ def generate_level(num_enemies=14, start_subdiv=12, min_gap=3, max_gap=9):
     """
     Arrivals in subdivision units (1 subdiv = 1 eighth note).
     Even subdivisions = quarter-note beat, odd = off-beat eighth note.
-    min_gap=3 prevents two enemies closer than 1.5 beats.
+    Each entry: (subdiv, side, kind)  kind = "kick" | "low"
     """
     enemies  = []
     subdiv   = start_subdiv   # start_subdiv=12 → beat 6
     for _ in range(num_enemies):
         side = random.choice(["left", "right"])
-        enemies.append((subdiv, side))
+        kind = "low" if random.random() < 0.25 else "kick"   # ~1 in 4 is a low runner
+        enemies.append((subdiv, side, kind))
         subdiv += random.randint(min_gap, max_gap)
     return enemies
 
-LEVEL_ENEMIES     = generate_level()
 LEVEL_SPIKE_BEATS = set()   # disabled for now
-LAST_BEAT         = max(b for b, _ in LEVEL_ENEMIES) + 4
 
 # ── Audio helpers ──────────────────────────────────────────────────────────────
 SAMPLE_RATE = 44100
@@ -89,6 +92,7 @@ def init_sounds():
         "enemy_die":  pygame.sndarray.make_sound(_make_wave(660,  0.18, 0.45, _square)), # punchy hit
         "damage":     pygame.sndarray.make_sound(_make_wave(110,  0.22, 0.38, _square)),
         "spike_dodge":pygame.sndarray.make_sound(_make_wave(550,  0.10, 0.20, _sine)),   # light ding
+        "low_dodge":  pygame.sndarray.make_sound(_make_wave(750,  0.12, 0.28, _sine)),   # rising zip for low runner
     }
 
 # ── Music loop ─────────────────────────────────────────────────────────────────
@@ -262,19 +266,27 @@ class Enemy:
     COLOR_ON  = (220, 130,  30)
     COLOR_OFF = (160,  60, 210)
 
-    def __init__(self, world_x, side, arrival_subdiv):
+    def __init__(self, world_x, side, arrival_subdiv, kind="kick"):
         self.world_x        = float(world_x)
         self.side           = side
         self.alive          = True
         self.dying          = 0
         self.arrival_subdiv = arrival_subdiv
         self.on_beat        = (arrival_subdiv % 2 == 0)   # even = quarter note
+        self.kind           = kind        # "kick" (normal) | "low" (jump over)
+        self.passed         = False       # low runner already resolved
+
+    def speed(self):
+        if self.kind == "low":
+            return LOW_R_SPEED if self.side == "right" else LOW_L_SPEED
+        return ENEMY_R_SPEED if self.side == "right" else ENEMY_L_SPEED
 
     def update(self, dt):
+        v = self.speed()
         if self.side == "right":
-            self.world_x -= ENEMY_R_SPEED * dt
+            self.world_x -= v * dt
         else:
-            self.world_x += ENEMY_L_SPEED * dt
+            self.world_x += v * dt
         if self.dying > 0:
             self.dying -= 1
 
@@ -293,6 +305,15 @@ class Enemy:
             color = WHITE if self.dying > Enemy.DYING_FRAMES - 4 else base
         else:
             color = base
+
+        if self.kind == "low":
+            # short fast runner — wide, low rectangle with small head
+            sy = FLOOR_Y - LOW_H
+            pygame.draw.rect(surf, color, (sx - LOW_W//2, sy, LOW_W, LOW_H),
+                             border_radius=6)
+            head_x = sx + (LOW_W//2 - 4 if self.side == "left" else -(LOW_W//2 - 4))
+            pygame.draw.circle(surf, color, (head_x, sy - 4), 7)
+            return
 
         sy = FLOOR_Y - ENEMY_H
         pygame.draw.rect(surf, color, (sx - ENEMY_W//2, sy, ENEMY_W, ENEMY_H),
@@ -406,7 +427,7 @@ def main():
 
     # New pattern every run
     level   = generate_level()
-    last_b  = max(s for s, _ in level) + 8   # 4 quarter beats grace in subdivisions
+    last_b  = max(s for s, _, _ in level) + 8   # 4 quarter beats grace in subdivisions
     pending = list(level)
     enemies = []
     spikes  = [Spike(calc_spike_world_x(b)) for b in LEVEL_SPIKE_BEATS]
@@ -472,25 +493,46 @@ def main():
                 LEAD_SUBDIVS = LEAD_BEATS * 2   # 4 quarter beats = 8 eighth notes
                 T = LEAD_SUBDIVS * SUBDIV_DUR   # travel time (same 2.4 s)
                 still_pending = []
-                for arrival_subdiv, side in pending:
+                for arrival_subdiv, side, kind in pending:
                     if beat_num == arrival_subdiv - LEAD_SUBDIVS:
-                        if side == "right":
-                            spawn_x = player.world_x + (PLAYER_SPEED + ENEMY_R_SPEED) * T
+                        if kind == "low":
+                            r_spd, l_spd = LOW_R_SPEED, LOW_L_SPEED
                         else:
-                            spawn_x = player.world_x - (ENEMY_L_SPEED - PLAYER_SPEED) * T
-                        enemies.append(Enemy(spawn_x, side, arrival_subdiv))
+                            r_spd, l_spd = ENEMY_R_SPEED, ENEMY_L_SPEED
+                        if side == "right":
+                            spawn_x = player.world_x + (PLAYER_SPEED + r_spd) * T
+                        else:
+                            spawn_x = player.world_x - (l_spd - PLAYER_SPEED) * T
+                        enemies.append(Enemy(spawn_x, side, arrival_subdiv, kind))
                     else:
-                        still_pending.append((arrival_subdiv, side))
+                        still_pending.append((arrival_subdiv, side, kind))
                 pending = still_pending
 
                 # Did player kick recently enough?
                 kick_l_valid = (0 < total_time - kick_l_time < BEAT_BUFFER)
                 kick_r_valid = (0 < total_time - kick_r_time < BEAT_BUFFER)
 
-                # Resolve enemies only on their exact arrival subdivision (fixes early-hit bug)
+                # Resolve enemies only on their exact arrival subdivision
                 for e in enemies:
-                    if not e.alive or beat_num != e.arrival_subdiv:
+                    if not e.alive or e.passed or beat_num != e.arrival_subdiv:
                         continue
+
+                    if e.kind == "low":
+                        # must be airborne when it arrives
+                        e.passed = True
+                        if player.on_ground:
+                            e.alive = False
+                            player.take_damage()
+                            sounds["damage"].play()
+                            if player.hp <= 0:
+                                game_over = True
+                                music.stop()
+                        else:
+                            sounds["low_dodge"].play()
+                            score += 150
+                            # runner keeps going and exits the screen
+                        continue
+
                     e.alive = False
                     kicked = (e.side == "right" and kick_r_valid) or \
                              (e.side == "left"  and kick_l_valid)
@@ -520,8 +562,9 @@ def main():
                 kick_l_time = -999.0
                 kick_r_time = -999.0
 
-                # Win condition
-                if beat_num >= last_b and not pending and all(not e.alive for e in enemies):
+                # Win condition (passed low runners count as resolved)
+                if beat_num >= last_b and not pending and \
+                   all((not e.alive) or e.passed for e in enemies):
                     win = game_over = True
                     music.stop()
 

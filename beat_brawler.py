@@ -91,6 +91,68 @@ def init_sounds():
         "spike_dodge":pygame.sndarray.make_sound(_make_wave(550,  0.10, 0.20, _sine)),   # light ding
     }
 
+# ── Music loop ─────────────────────────────────────────────────────────────────
+# Original chiptune melody in arcade kung-fu style (A minor pentatonic).
+# 4 bars of 4/4 at BPM — loops seamlessly. Notes in eighth-note grid.
+
+NOTE = {  # frequencies (Hz)
+    "A3": 220.00, "C4": 261.63, "D4": 293.66, "E4": 329.63, "G4": 392.00,
+    "A4": 440.00, "C5": 523.25, "D5": 587.33, "E5": 659.26, "G5": 783.99,
+    "A2": 110.00, "E3": 164.81, "G3": 196.00, "D3": 146.83,
+    "R":  0.0,    # rest
+}
+
+# Melody: 4 bars × 8 eighth notes = 32 slots (square lead)
+MELODY = [
+    "A4","R", "C5","A4", "E5","R", "D5","C5",
+    "A4","R", "C5","D5", "E5","D5", "C5","A4",
+    "G4","R", "A4","C5", "D5","R", "C5","A4",
+    "E4","G4", "A4","R", "A4","R", "R", "R",
+]
+# Bass: one note per quarter note = 16 slots (low square)
+BASS = [
+    "A2","A2","E3","E3",
+    "A2","A2","G3","G3",
+    "D3","D3","E3","E3",
+    "A2","E3","A2","A2",
+]
+
+def _tone(freq, dur, vol, wave_fn, sustain=0.85):
+    """Note with quick attack and release inside its slot."""
+    n = int(dur * SAMPLE_RATE)
+    if freq <= 0:
+        return np.zeros(n)
+    t   = np.linspace(0, dur, n, endpoint=False)
+    raw = wave_fn(freq, t)
+    env = np.ones(n)
+    a   = max(1, int(0.008 * SAMPLE_RATE))      # 8 ms attack
+    r   = max(1, int((1 - sustain) * n))        # release tail
+    env[:a]  = np.linspace(0, 1, a)
+    env[-r:] = np.linspace(1, 0, r)
+    return raw * env * vol
+
+def build_music_loop():
+    """Render the full 4-bar loop into one stereo Sound."""
+    eighth  = SUBDIV_DUR                 # one melody slot
+    quarter = BEAT_DUR                   # one bass slot
+    total_n = int(32 * eighth * SAMPLE_RATE)
+    mix = np.zeros(total_n)
+
+    for i, name in enumerate(MELODY):
+        seg = _tone(NOTE[name], eighth, 0.16, _square)
+        s   = int(i * eighth * SAMPLE_RATE)
+        mix[s:s+len(seg)] += seg
+
+    for i, name in enumerate(BASS):
+        seg = _tone(NOTE[name], quarter, 0.13, _square, sustain=0.7)
+        s   = int(i * quarter * SAMPLE_RATE)
+        mix[s:s+len(seg)] += seg
+
+    mix  = np.clip(mix, -1, 1)
+    data = (mix * 32767).astype(np.int16)
+    return pygame.sndarray.make_sound(
+        np.ascontiguousarray(np.column_stack([data, data])))
+
 # ── World position helpers ─────────────────────────────────────────────────────
 def player_x_at_beat(beat):
     return PLAYER_START_X + PLAYER_SPEED * beat * BEAT_DUR
@@ -263,6 +325,8 @@ def main():
     sm_fnt = pygame.font.SysFont("monospace", 13)
 
     sounds = init_sounds()
+    music  = build_music_loop()
+    music.play(loops=-1)   # seamless loop, length = exact multiple of subdivision
 
     # New pattern every run
     level   = generate_level()
@@ -324,8 +388,9 @@ def main():
                 is_quarter = (beat_num % 2 == 0)
                 if is_quarter:
                     beat_pulse = 1.0
-                    is_down    = (beat_num % 8 == 0)
-                    sounds["beat" if is_down else "tick"].play()
+                    # music carries the rhythm; soft tick only on bar downbeat
+                    if beat_num % 8 == 0:
+                        sounds["tick"].play()
 
                 # Spawn enemies due on this subdivision
                 LEAD_SUBDIVS = LEAD_BEATS * 2   # 4 quarter beats = 8 eighth notes
@@ -362,6 +427,7 @@ def main():
                         sounds["damage"].play()
                         if player.hp <= 0:
                             game_over = True
+                            music.stop()
 
                 # Check spike on this beat (player must be in the air)
                 if beat_num in LEVEL_SPIKE_BEATS:
@@ -370,6 +436,7 @@ def main():
                         sounds["damage"].play()
                         if player.hp <= 0:
                             game_over = True
+                            music.stop()
                     else:
                         sounds["spike_dodge"].play()
 
@@ -380,6 +447,7 @@ def main():
                 # Win condition
                 if beat_num >= last_b and not pending and all(not e.alive for e in enemies):
                     win = game_over = True
+                    music.stop()
 
         # Beat pulse decay
         beat_pulse = max(0.0, beat_pulse - dt * 5)

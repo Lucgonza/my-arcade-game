@@ -131,6 +131,25 @@ def _tone(freq, dur, vol, wave_fn, sustain=0.85):
     env[-r:] = np.linspace(1, 0, r)
     return raw * env * vol
 
+def _kick_drum(vol):
+    """Low thump: pitch-swept sine 120→50 Hz, 90 ms."""
+    dur = 0.09
+    n   = int(dur * SAMPLE_RATE)
+    t   = np.linspace(0, dur, n, endpoint=False)
+    freq = np.linspace(120, 50, n)
+    raw  = np.sin(2 * np.pi * np.cumsum(freq) / SAMPLE_RATE)
+    env  = np.linspace(1, 0, n) ** 2
+    return raw * env * vol
+
+def _hat_tick(vol):
+    """Soft noise tick, 30 ms."""
+    dur = 0.03
+    n   = int(dur * SAMPLE_RATE)
+    rng = np.random.default_rng(7)        # fixed seed → identical every loop
+    raw = rng.uniform(-1, 1, n)
+    env = np.linspace(1, 0, n) ** 2
+    return raw * env * vol
+
 def build_music_loop():
     """Render the full 4-bar loop into one stereo Sound."""
     eighth  = SUBDIV_DUR                 # one melody slot
@@ -146,6 +165,19 @@ def build_music_loop():
     for i, name in enumerate(BASS):
         seg = _tone(NOTE[name], quarter, 0.13, _square, sustain=0.7)
         s   = int(i * quarter * SAMPLE_RATE)
+        mix[s:s+len(seg)] += seg
+
+    # Percussion: 16 quarter notes, compass accents per 4-beat bar
+    #   beat 1 → kick (strong) | beat 3 → kick (medium) | beats 2,4 → hat (weak)
+    for q in range(16):
+        pos_in_bar = q % 4
+        if pos_in_bar == 0:
+            seg = _kick_drum(0.12)
+        elif pos_in_bar == 2:
+            seg = _kick_drum(0.06)
+        else:
+            seg = _hat_tick(0.04)
+        s = int(q * quarter * SAMPLE_RATE)
         mix[s:s+len(seg)] += seg
 
     mix  = np.clip(mix, -1, 1)
@@ -316,6 +348,50 @@ def draw_hud(surf, font, sm_font, player, pulse, beat_num, score):
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
+# ── Parallax background ────────────────────────────────────────────────────────
+# Three layers, deterministic from world position (no state needed):
+#   far  mountains (0.2× scroll), mid buildings (0.5×), near posts (0.8×)
+
+def draw_parallax(surf, cam_x):
+    # Layer 1 — far mountains (triangles every 300 px, scroll 0.2×)
+    off = cam_x * 0.2
+    spacing = 300
+    first = int(off // spacing) - 1
+    for i in range(first, first + WIDTH // spacing + 3):
+        sx = int(i * spacing - off)
+        h  = 90 + (i * 53 % 60)            # deterministic pseudo-random height
+        pygame.draw.polygon(surf, (24, 24, 44), [
+            (sx - 160, FLOOR_Y),
+            (sx,        FLOOR_Y - h),
+            (sx + 160, FLOOR_Y),
+        ])
+
+    # Layer 2 — mid pagoda-ish buildings (every 220 px, scroll 0.5×)
+    off = cam_x * 0.5
+    spacing = 220
+    first = int(off // spacing) - 1
+    for i in range(first, first + WIDTH // spacing + 3):
+        sx = int(i * spacing - off)
+        w  = 70 + (i * 37 % 40)
+        h  = 55 + (i * 71 % 45)
+        pygame.draw.rect(surf, (38, 34, 60), (sx, FLOOR_Y - h, w, h))
+        # roof line
+        pygame.draw.polygon(surf, (50, 44, 76), [
+            (sx - 10,     FLOOR_Y - h),
+            (sx + w + 10, FLOOR_Y - h),
+            (sx + w // 2, FLOOR_Y - h - 22),
+        ])
+
+    # Layer 3 — near posts (every 130 px, scroll 0.8×)
+    off = cam_x * 0.8
+    spacing = 130
+    first = int(off // spacing) - 1
+    for i in range(first, first + WIDTH // spacing + 3):
+        sx = int(i * spacing - off)
+        pygame.draw.rect(surf, (52, 52, 78), (sx, FLOOR_Y - 42, 8, 42))
+        pygame.draw.rect(surf, (52, 52, 78), (sx - 6, FLOOR_Y - 46, 20, 6))
+
+
 def main():
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -457,6 +533,9 @@ def main():
 
         # ── Draw ────────────────────────────────────────────────────────────
         screen.fill(BLACK)
+
+        # Parallax background
+        draw_parallax(screen, cam_x)
 
         # Floor
         pygame.draw.line(screen, GRAY, (0, FLOOR_Y), (WIDTH, FLOOR_Y), 2)

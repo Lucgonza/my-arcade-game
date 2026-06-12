@@ -19,7 +19,9 @@ BIRD_RADIUS = 14
 
 PIPE_W = 70
 PIPE_GAP = 170
-PIPE_SPEED = 3.0
+BASE_SPEED = 3.0            # starting scroll/pipe speed
+SPEED_RAMP = 0.0006         # speed gain per frame (~0.036/sec at 60fps)
+MAX_SPEED = 7.0
 PIPE_INTERVAL = 1600        # ms between pipes
 GAP_MARGIN = 80             # min distance of gap center from top/bottom
 
@@ -105,8 +107,8 @@ class Pipe:
                                     HEIGHT - GAP_MARGIN - PIPE_GAP // 2)
         self.scored = [False] * 4
 
-    def update(self):
-        self.x -= PIPE_SPEED
+    def update(self, speed):
+        self.x -= speed
 
     def offscreen(self):
         return self.x + PIPE_W < 0
@@ -121,6 +123,45 @@ class Pipe:
         for r in self.rects():
             pygame.draw.rect(surf, PIPE_COLOR, r)
             pygame.draw.rect(surf, PIPE_EDGE, r, 3)
+
+# ---------- Parallax background ----------
+class HillLayer:
+    """Looping procedural hill silhouette scrolling at a fraction of pipe speed."""
+    def __init__(self, factor, color, base_y, amp, step=40):
+        self.factor = factor
+        self.color = color
+        self.step = step
+        n = WIDTH // step
+        h = base_y
+        self.heights = []
+        for _ in range(n):
+            h += random.randint(-amp, amp)
+            h = max(base_y - 50, min(base_y + 50, h))
+            self.heights.append(h)
+        self.heights[-1] = self.heights[0]  # smooth wrap seam
+
+    def draw(self, surf, scroll):
+        off = int(scroll * self.factor)
+        n = len(self.heights)
+        pts = []
+        for sx in range(-self.step, WIDTH + 2 * self.step, self.step):
+            idx = ((sx + off) // self.step) % n
+            pts.append((sx, self.heights[idx]))
+        pts += [(WIDTH + 2 * self.step, HEIGHT), (-self.step, HEIGHT)]
+        pygame.draw.polygon(surf, self.color, pts)
+
+class StarField:
+    """Slow-scrolling wrapping stars."""
+    def __init__(self, count=60, factor=0.15):
+        self.factor = factor
+        self.stars = [(random.randint(0, WIDTH - 1),
+                       random.randint(0, HEIGHT - 200),
+                       random.choice([1, 1, 2])) for _ in range(count)]
+
+    def draw(self, surf, scroll):
+        for x, y, size in self.stars:
+            sx = int(x - scroll * self.factor) % WIDTH
+            pygame.draw.circle(surf, (180, 185, 210), (sx, y), size)
 
 # ---------- Game ----------
 def main():
@@ -141,14 +182,21 @@ def main():
     birds, pipes = [], []
     last_pipe = 0
     winner = None
+    scroll = 0.0
+    speed = BASE_SPEED
+
+    stars = StarField()
+    far_hills = HillLayer(0.35, (38, 44, 62), HEIGHT - 150, 18)
+    near_hills = HillLayer(0.60, (50, 58, 82), HEIGHT - 80, 25)
 
     def start_game(n):
-        nonlocal birds, pipes, last_pipe, state, num_players, winner
+        nonlocal birds, pipes, last_pipe, state, num_players, winner, speed
         num_players = n
         birds = [Bird(i) for i in range(n)]
         pipes = []
         last_pipe = pygame.time.get_ticks()
         winner = None
+        speed = BASE_SPEED
         state = "playing"
 
     running = True
@@ -173,13 +221,15 @@ def main():
                         state = "menu"
 
         if state == "playing":
+            speed = min(MAX_SPEED, speed + SPEED_RAMP)
+            scroll += speed
             # spawn pipes
             if now - last_pipe >= PIPE_INTERVAL:
                 pipes.append(Pipe(WIDTH))
                 last_pipe = now
 
             for p in pipes:
-                p.update()
+                p.update(speed)
             pipes = [p for p in pipes if not p.offscreen()]
 
             for b in birds:
@@ -204,17 +254,21 @@ def main():
                         p.scored[b.idx] = True
                         b.score += 1
 
-            # win check (last one standing; solo play = survive as long as you can)
+            # win check: game continues until ALL birds are dead.
+            # The last bird still alive becomes the presumptive winner and
+            # keeps flapping to raise its score until it dies too.
             alive = [b for b in birds if b.alive]
             if num_players > 1 and len(alive) == 1:
-                winner = alive[0]
-                state = "gameover"
-            elif len(alive) == 0:
-                winner = None  # draw / solo death
+                winner = alive[0]   # presumptive winner, game keeps running
+            if len(alive) == 0:
+                # if the last two+ died on the same frame, winner stays None = draw
                 state = "gameover"
 
         # ---------- Draw ----------
         screen.fill(BG)
+        stars.draw(screen, scroll)
+        far_hills.draw(screen, scroll)
+        near_hills.draw(screen, scroll)
 
         if state == "menu":
             title = bigfont.render("FLABBY BIRD", True, (255, 255, 255))

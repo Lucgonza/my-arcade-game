@@ -8,6 +8,25 @@ import pygame
 import random
 import array
 import math
+import json
+import os
+
+HIGHSCORE_FILE = "flabby_highscore.json"
+
+def load_highscore():
+    try:
+        with open(HIGHSCORE_FILE) as f:
+            d = json.load(f)
+            return {"score": int(d["score"]), "name": str(d["name"])}
+    except (OSError, ValueError, KeyError):
+        return {"score": 0, "name": ""}
+
+def save_highscore(hs):
+    try:
+        with open(HIGHSCORE_FILE, "w") as f:
+            json.dump(hs, f)
+    except OSError:
+        pass  # non-fatal: high score just won't persist
 
 # ---------- Config ----------
 WIDTH, HEIGHT = 800, 600
@@ -27,11 +46,14 @@ GAP_MARGIN = 80             # min distance of gap center from top/bottom
 
 DEATH_FRAMES = 72           # blink-and-vanish duration
 
+COIN_R = 9                  # coin radius
+COIN_Y_MARGIN = 60          # min distance of coins from top/bottom
+
 PLAYERS = [
     {"name": "Yellow", "color": (255, 210, 60),  "key": pygame.K_a,         "label": "A"},
     {"name": "Red",    "color": (235, 80, 80),   "key": pygame.K_f,         "label": "F"},
     {"name": "Green",  "color": (90, 200, 120),  "key": pygame.K_j,         "label": "J"},
-    {"name": "Blue",   "color": (90, 150, 255),  "key": pygame.K_SEMICOLON, "label": ";"},
+    {"name": "Blue",   "color": (90, 150, 255),  "key": pygame.K_l,         "label": "L"},
 ]
 BIRD_X = [180, 220, 260, 300]   # staggered X per player
 
@@ -105,7 +127,6 @@ class Pipe:
         self.x = x
         self.gap_y = random.randint(GAP_MARGIN + PIPE_GAP // 2,
                                     HEIGHT - GAP_MARGIN - PIPE_GAP // 2)
-        self.scored = [False] * 4
 
     def update(self, speed):
         self.x -= speed
@@ -123,6 +144,25 @@ class Pipe:
         for r in self.rects():
             pygame.draw.rect(surf, PIPE_COLOR, r)
             pygame.draw.rect(surf, PIPE_EDGE, r, 3)
+
+# ---------- Coin ----------
+class Coin:
+    """Player-colored coin; only its owner can collect it."""
+    def __init__(self, x, y, owner_idx):
+        self.x = x
+        self.y = y
+        self.owner = owner_idx
+        self.color = PLAYERS[owner_idx]["color"]
+
+    def update(self, speed):
+        self.x -= speed
+
+    def offscreen(self):
+        return self.x + COIN_R < 0
+
+    def draw(self, surf):
+        pygame.draw.circle(surf, self.color, (int(self.x), int(self.y)), COIN_R)
+        pygame.draw.circle(surf, (255, 255, 255), (int(self.x), int(self.y)), COIN_R, 2)
 
 # ---------- Parallax background ----------
 class HillLayer:
@@ -173,30 +213,35 @@ def main():
     font = pygame.font.SysFont(None, 32)
     bigfont = pygame.font.SysFont(None, 64)
 
-    # one flap blip per player, rising pitch; one crash thud
+    # one flap blip per player, rising pitch; one crash thud; coin chime
     flap_snd = [make_tone(440 + 120 * i, 70, 0.35, "sine") for i in range(4)]
     crash_snd = make_tone(110, 220, 0.5, "square")
+    coin_snd = make_tone(990, 90, 0.4, "sine")
 
     state = "menu"          # menu -> playing -> gameover
     num_players = 0
-    birds, pipes = [], []
+    birds, pipes, coins = [], [], []
     last_pipe = 0
     winner = None
     scroll = 0.0
     speed = BASE_SPEED
+    highscore = load_highscore()
+    new_record = False
 
     stars = StarField()
     far_hills = HillLayer(0.35, (38, 44, 62), HEIGHT - 150, 18)
     near_hills = HillLayer(0.60, (50, 58, 82), HEIGHT - 80, 25)
 
     def start_game(n):
-        nonlocal birds, pipes, last_pipe, state, num_players, winner, speed
+        nonlocal birds, pipes, coins, last_pipe, state, num_players, winner, speed, new_record
         num_players = n
         birds = [Bird(i) for i in range(n)]
         pipes = []
+        coins = []
         last_pipe = pygame.time.get_ticks()
         winner = None
         speed = BASE_SPEED
+        new_record = False
         state = "playing"
 
     running = True
@@ -223,14 +268,27 @@ def main():
         if state == "playing":
             speed = min(MAX_SPEED, speed + SPEED_RAMP)
             scroll += speed
-            # spawn pipes
+            # spawn pipes + coins midway to the NEXT pipe
             if now - last_pipe >= PIPE_INTERVAL:
                 pipes.append(Pipe(WIDTH))
                 last_pipe = now
+                # distance the world travels between two pipe spawns
+                spacing = speed * (PIPE_INTERVAL / 1000.0) * FPS
+                coin_x = WIDTH + spacing / 2
+                for b in birds:
+                    if b.alive:
+                        cy = random.randint(COIN_Y_MARGIN, HEIGHT - COIN_Y_MARGIN)
+                        coins.append(Coin(coin_x, cy, b.idx))
 
             for p in pipes:
                 p.update(speed)
             pipes = [p for p in pipes if not p.offscreen()]
+
+            for c in coins:
+                c.update(speed)
+            # drop coins that scrolled away or belong to dead players
+            coins = [c for c in coins
+                     if not c.offscreen() and birds[c.owner].alive]
 
             for b in birds:
                 b.update()
@@ -250,18 +308,29 @@ def main():
                         b.kill()
                         crash_snd.play()
                         break
-                    if not p.scored[b.idx] and p.x + PIPE_W < b.x:
-                        p.scored[b.idx] = True
-                        b.score += 1
+                if not b.alive:
+                    continue
+                # coin collection (only the owner can collect)
+                for c in coins:
+                    if c.owner == b.idx:
+                        if (b.x - c.x) ** 2 + (b.y - c.y) ** 2 <= (BIRD_RADIUS + COIN_R) ** 2:
+                            b.score += 1
+                            coin_snd.play()
+                            coins.remove(c)
+                            break
 
-            # win check: game continues until ALL birds are dead.
-            # The last bird still alive becomes the presumptive winner and
-            # keeps flapping to raise its score until it dies too.
+            # end check: game continues until ALL birds are dead, so the
+            # last survivor can keep collecting coins. Winner = most coins.
             alive = [b for b in birds if b.alive]
-            if num_players > 1 and len(alive) == 1:
-                winner = alive[0]   # presumptive winner, game keeps running
             if len(alive) == 0:
-                # if the last two+ died on the same frame, winner stays None = draw
+                best = max(b.score for b in birds)
+                top_birds = [b for b in birds if b.score == best]
+                winner = top_birds[0] if (num_players > 1 and len(top_birds) == 1) else None
+                # high score check (best individual coin count, any mode)
+                if best > highscore["score"]:
+                    highscore = {"score": best, "name": top_birds[0].name}
+                    save_highscore(highscore)
+                    new_record = True
                 state = "gameover"
 
         # ---------- Draw ----------
@@ -269,6 +338,14 @@ def main():
         stars.draw(screen, scroll)
         far_hills.draw(screen, scroll)
         near_hills.draw(screen, scroll)
+
+        # persistent high score, top-right
+        if highscore["score"] > 0:
+            hs_color = next((p["color"] for p in PLAYERS
+                             if p["name"] == highscore["name"]), (255, 255, 255))
+            hs_t = font.render(f"HIGH: {highscore['score']} ({highscore['name']})",
+                               True, hs_color)
+            screen.blit(hs_t, hs_t.get_rect(topright=(WIDTH - 15, 12)))
 
         if state == "menu":
             title = bigfont.render("FLABBY BIRD", True, (255, 255, 255))
@@ -281,22 +358,32 @@ def main():
         else:
             for p in pipes:
                 p.draw(screen)
+            for c in coins:
+                c.draw(screen)
             for b in birds:
                 b.draw(screen)
-            # HUD
+            # HUD (coin counts; X marks a dead player)
             for i, b in enumerate(birds):
-                status = str(b.score) if b.alive else "X"
+                status = f"{b.score}" + ("" if b.alive else "  X")
                 t = font.render(f"{b.name}: {status}", True, b.color)
                 screen.blit(t, (15, 12 + i * 30))
 
             if state == "gameover":
                 if winner:
-                    msg = bigfont.render(f"{winner.name} WINS!", True, winner.color)
+                    msg = bigfont.render(f"{winner.name} WINS — {winner.score} coins!",
+                                         True, winner.color)
+                elif num_players > 1:
+                    msg = bigfont.render("DRAW!", True, (255, 255, 255))
                 else:
                     msg = bigfont.render("GAME OVER", True, (255, 255, 255))
                 screen.blit(msg, msg.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 30)))
+                if new_record:
+                    rec = font.render(
+                        f"NEW HIGH SCORE: {highscore['score']} by {highscore['name']}!",
+                        True, (255, 230, 100))
+                    screen.blit(rec, rec.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 20)))
                 sub = font.render("Press R to return to menu", True, (200, 200, 200))
-                screen.blit(sub, sub.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 30)))
+                screen.blit(sub, sub.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 60)))
 
         pygame.display.flip()
 

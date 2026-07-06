@@ -38,26 +38,25 @@ MILESTONE = 100            # beep every N points
 
 HIGHSCORE_FILE = "horse_highscore.json"
 
-# Palette (colorful)
-SKY_TOP = (110, 190, 240)
-SKY_BOTTOM = (200, 235, 250)
-SUN = (255, 220, 100)
-HILL_FAR = (150, 205, 150)
-HILL_NEAR = (100, 175, 110)
-GROUND_COL = (215, 170, 110)
-GROUND_LINE = (150, 110, 70)
-HORSE_COAT = (245, 242, 235)     # white pinto base
-HORSE_PATCH = (150, 90, 45)      # brown patches
-HORSE_MANE = (45, 35, 30)        # dark mane/tail
-HORSE_HOOF = (35, 30, 25)
-HORSE_MUZZLE = (120, 110, 105)
-BUSH_GREEN = (60, 140, 60)
-BUSH_DARK = (40, 105, 45)
-BUSH_BERRY = (220, 60, 80)
-BIRD_COL = (70, 90, 200)
-BIRD_WING = (110, 130, 235)
-TEXT_COL = (40, 40, 60)
-CLOUD_COL = (255, 255, 255)
+# Palette (monochrome, Guernica-inspired: blacks, whites, newsprint greys)
+SKY_TOP = (225, 225, 220)
+SKY_BOTTOM = (190, 190, 185)
+SUN = (245, 245, 240)            # drawn as a bulb-eye with rays
+HILL_FAR = (150, 150, 148)
+HILL_NEAR = (110, 110, 108)
+GROUND_COL = (70, 70, 68)
+GROUND_LINE = (25, 25, 25)
+HORSE_LIGHT = (240, 240, 235)    # faceted body planes
+HORSE_MID = (185, 185, 180)
+HORSE_DARK = (120, 120, 118)
+HORSE_LINE = (15, 15, 15)        # black outlines
+BUSH_GREEN = (30, 30, 30)        # black shard bushes
+BUSH_DARK = (15, 15, 15)
+BUSH_BERRY = (235, 235, 230)     # white accents
+BIRD_COL = (235, 235, 230)
+BIRD_WING = (170, 170, 168)
+TEXT_COL = (15, 15, 15)
+CLOUD_COL = (240, 240, 238)
 
 # ----------------------------------------------------------------------------
 # Synthetic audio
@@ -73,10 +72,14 @@ def make_sound(samples: np.ndarray) -> pygame.mixer.Sound:
 
 
 def sfx_jump():
-    t = np.linspace(0, 0.15, int(SAMPLE_RATE * 0.15), False)
-    freq = 300 + 500 * t / 0.15                      # rising chirp
-    wave = np.sin(2 * np.pi * freq * t) * np.exp(-t * 12)
-    return make_sound(wave)
+    # Dramatic whinny-like jump: sweep with vibrato over a low thump
+    t = np.linspace(0, 0.35, int(SAMPLE_RATE * 0.35), False)
+    sweep = 220 + 660 * (t / 0.35)                       # rising sweep
+    vib = 1 + 0.04 * np.sin(2 * np.pi * 24 * t)          # fast vibrato
+    voice = np.sign(np.sin(2 * np.pi * sweep * vib * t)) * 0.35  # square, brash
+    voice *= np.exp(-t * 6)
+    thump = np.sin(2 * np.pi * 70 * t) * np.exp(-t * 22) * 0.8
+    return make_sound(voice + thump)
 
 
 def sfx_hit():
@@ -92,6 +95,45 @@ def sfx_milestone():
     w1 = np.sin(2 * np.pi * 880 * t) * np.exp(-t * 18)
     w2 = np.sin(2 * np.pi * 1320 * t) * np.exp(-t * 18)
     return make_sound(np.concatenate((w1, w2)))
+
+
+def make_music() -> pygame.mixer.Sound:
+    """Somber D-minor loop: bass drone + sparse melody. ~9.6 s, loops."""
+    bpm = 100
+    beat = 60.0 / bpm
+    n_beats = 16
+    total = int(SAMPLE_RATE * beat * n_beats)
+    mix = np.zeros(total)
+    D2, F2, A2, C3 = 73.42, 87.31, 110.0, 130.81
+    D4, E4, F4, G4, A4, Bb4, C5 = (293.66, 329.63, 349.23, 392.0,
+                                   440.0, 466.16, 523.25)
+
+    def add(freq, start_beat, dur_beats, vol, shape="sine"):
+        n0 = int(start_beat * beat * SAMPLE_RATE)
+        n = int(dur_beats * beat * SAMPLE_RATE)
+        if n0 + n > total:
+            n = total - n0
+        t = np.arange(n) / SAMPLE_RATE
+        if shape == "saw":
+            w = 2 * ((freq * t) % 1.0) - 1.0
+        else:
+            w = np.sin(2 * np.pi * freq * t)
+        env = np.minimum(1.0, t / 0.02) * np.exp(-t * (2.2 / (dur_beats * beat)))
+        mix[n0:n0 + n] += w * env * vol
+
+    # Bass: Dm - Bb(F) - Am - Dm, two beats each note (8 x 2 = 16 beats)
+    bass = [D2, D2, F2, F2, A2, A2, D2, C3]
+    for i, f in enumerate(bass):
+        add(f, i * 2, 2, 0.30)
+    # Sparse melody (D natural minor), enters on beat 4
+    melody = [(D4, 4, 1.5), (F4, 6, 1), (E4, 7, 1), (D4, 8, 2),
+              (A4, 10, 1.5), (G4, 11.5, 0.5), (F4, 12, 2), (E4, 14, 2)]
+    for f, s, d in melody:
+        add(f, s, d, 0.16, "saw")
+    # Low pulse every beat (heartbeat)
+    for b in range(n_beats):
+        add(D2 / 2, b, 0.2, 0.22)
+    return make_sound(mix * 0.6)
 
 
 # ----------------------------------------------------------------------------
@@ -114,99 +156,8 @@ def save_highscore(score: int) -> None:
 
 
 # ----------------------------------------------------------------------------
-# Horse - embedded pixel-art sprites
-# Chars: . transparent  W white coat  B brown patch  M mane/outline
-#        H hoof  E eye  N muzzle
+# Horse - cubist (angular planes, black outlines)
 # ----------------------------------------------------------------------------
-SPRITE_PX = 4          # screen pixels per art pixel
-SPRITE_PALETTE = {
-    "W": (245, 242, 235),
-    "B": (150, 89, 45),
-    "M": (45, 35, 30),
-    "H": (35, 30, 25),
-    "E": (20, 20, 20),
-    "N": (138, 128, 120),
-}
-
-# Shared upper body (head, neck, torso, tail) - 22 wide x 9 rows
-HORSE_BASE = [
-    "......................",
-    "............MMM.......",
-    "...........MWWWM......",
-    "...........BBWWEM.....",
-    "....M......MWWWNN.....",
-    "...MMWWWWWWWWWWN......",
-    "..MWBBWWWWWWWBW.......",
-    "..MWBBWWWWWWWWW.......",
-    "...WWWWWWWWWWWW.......",
-]
-
-# Leg variants - 4 rows each (gallop cycle + jump poses)
-LEGS_GALLOP = [
-    [   # 1: full extension - hind swept back, fore reaching
-        "..WW........WW........",
-        ".WW..........WW.......",
-        "WW............WW......",
-        "HH............HH......",
-    ],
-    [   # 2: gathering under
-        "...WW.....WW..........",
-        "...WW......WW.........",
-        "...WW.......WW........",
-        "...HH.......HH........",
-    ],
-    [   # 3: tucked, legs cross under body
-        "....WW...WW...........",
-        ".....WW.WW............",
-        ".....WW.WW............",
-        ".....HH.HH............",
-    ],
-    [   # 4: push-off
-        "...WW......WW.........",
-        "..WW........WW........",
-        "..WW.........WW.......",
-        "..HH.........HH.......",
-    ],
-]
-LEGS_RISE = [   # take-off: fore folded up, hind stretched back
-    ".WW.........WWWH......",
-    "WW....................",
-    "WW....................",
-    "HH....................",
-]
-LEGS_FALL = [   # landing: fore extended down, hind folded
-    "....WWWH.....WW.......",
-    ".............WW.......",
-    "..............WW......",
-    "..............HH......",
-]
-
-HORSE_DUCK = [
-    "........................",
-    "...MM..............MMM..",
-    "..MMWWWWWWWWWWWWWWWWWEM.",
-    ".MWBBWWWWWWWBWWWWWWWWNN.",
-    ".MWBBWWWWWWWWWWWWWWWN...",
-    "..WWWWWWWWWWWWWW........",
-    "...WW.......WW..........",
-    "...WW........WW.........",
-    "...HH........HH.........",
-    "........................",
-]
-
-
-def build_sprite(grid) -> pygame.Surface:
-    w, h = len(grid[0]), len(grid)
-    surf = pygame.Surface((w * SPRITE_PX, h * SPRITE_PX), pygame.SRCALPHA)
-    for y, row in enumerate(grid):
-        for x, ch in enumerate(row):
-            col = SPRITE_PALETTE.get(ch)
-            if col:
-                surf.fill(col, (x * SPRITE_PX, y * SPRITE_PX,
-                                SPRITE_PX, SPRITE_PX))
-    return surf
-
-
 class Horse:
     def __init__(self):
         self.x = 110
@@ -218,12 +169,7 @@ class Horse:
         self.ducking = False
         self.leg_phase = 0.0
         self.bob = 0.0
-        # Pre-render all frames once
-        self.frames_gallop = [build_sprite(HORSE_BASE + legs)
-                              for legs in LEGS_GALLOP]
-        self.frame_rise = build_sprite(HORSE_BASE + LEGS_RISE)
-        self.frame_fall = build_sprite(HORSE_BASE + LEGS_FALL)
-        self.frame_duck = build_sprite(HORSE_DUCK)
+        self.tilt = 0.0
 
     @property
     def rect(self) -> pygame.Rect:
@@ -241,10 +187,12 @@ class Horse:
     def update(self, dt: float, speed: float, duck_pressed: bool):
         if self.on_ground:
             self.ducking = duck_pressed
-            self.leg_phase += dt * speed * 0.02   # gallop frame rate
-            self.bob = math.sin(self.leg_phase * math.pi) * 2
+            self.leg_phase += dt * speed * 0.045
+            self.bob = math.sin(self.leg_phase * 2) * 3
+            self.tilt = 0.0
         else:
             self.bob = 0.0
+            self.tilt = max(-0.35, min(0.35, -self.vy / 2600.0))
             self.vy += GRAVITY * dt
             self.y += self.vy * dt
             if self.y >= GROUND_Y - self.h:
@@ -252,16 +200,139 @@ class Horse:
                 self.vy = 0.0
                 self.on_ground = True
 
+    def _leg(self, surf, hip, phase, reach=0.8, airborne_pose=None):
+        """Angular two-segment leg, straight black strokes."""
+        if airborne_pose is None:
+            hip_ang = math.sin(phase) * reach
+            fold = max(0.0, -math.sin(phase - 0.9)) * 1.1
+        else:
+            hip_ang, fold = airborne_pose
+        upper, lower = 14, 14
+        knee = (hip[0] + math.sin(hip_ang) * upper,
+                hip[1] + math.cos(hip_ang) * upper)
+        shin_ang = hip_ang - fold
+        hoof = (knee[0] + math.sin(shin_ang) * lower,
+                knee[1] + math.cos(shin_ang) * lower)
+        # Faceted leg: light plane with black edge
+        pygame.draw.line(surf, HORSE_LINE, hip, knee, 8)
+        pygame.draw.line(surf, HORSE_MID, hip, knee, 4)
+        pygame.draw.line(surf, HORSE_LINE, knee, hoof, 7)
+        pygame.draw.line(surf, HORSE_LIGHT, knee, hoof, 3)
+        # Angular hoof: small black triangle
+        pygame.draw.polygon(surf, HORSE_LINE, [
+            (hoof[0] - 4, hoof[1] + 2), (hoof[0] + 5, hoof[1] + 2),
+            (hoof[0] + 1, hoof[1] - 4)])
+
     def draw(self, surf):
         r = self.rect
-        if self.ducking and self.on_ground:
-            img = self.frame_duck
-        elif self.on_ground:
-            img = self.frames_gallop[int(self.leg_phase) % 4]
+        ducking = self.ducking and self.on_ground
+        bob = self.bob if self.on_ground else 0.0
+        by = r.y + 6 + bob
+        body = pygame.Rect(r.x, int(by), r.w, r.h - 18)
+        hind_hip = (r.x + 16, body.bottom - 6)
+        fore_hip = (r.right - 18, body.bottom - 6)
+        p = self.leg_phase
+
+        # Legs
+        if self.on_ground:
+            self._leg(surf, hind_hip, p, 0.9)
+            self._leg(surf, (hind_hip[0] + 9, hind_hip[1]), p - 0.5, 0.9)
+            self._leg(surf, fore_hip, p + math.pi * 0.75, 0.8)
+            self._leg(surf, (fore_hip[0] - 9, fore_hip[1]),
+                      p + math.pi * 0.75 - 0.5, 0.8)
         else:
-            img = self.frame_rise if self.vy < 0 else self.frame_fall
-        # Align sprite bottom to hitbox bottom, slight left overhang for tail
-        surf.blit(img, (r.x - 8, r.bottom - img.get_height() + self.bob))
+            if self.vy < 0:
+                self._leg(surf, fore_hip, 0, airborne_pose=(1.0, 1.6))
+                self._leg(surf, (fore_hip[0] - 9, fore_hip[1]), 0,
+                          airborne_pose=(0.8, 1.5))
+                self._leg(surf, hind_hip, 0, airborne_pose=(-0.9, 0.2))
+                self._leg(surf, (hind_hip[0] + 9, hind_hip[1]), 0,
+                          airborne_pose=(-0.7, 0.2))
+            else:
+                self._leg(surf, fore_hip, 0, airborne_pose=(0.5, 0.1))
+                self._leg(surf, (fore_hip[0] - 9, fore_hip[1]), 0,
+                          airborne_pose=(0.3, 0.1))
+                self._leg(surf, hind_hip, 0, airborne_pose=(-0.5, 1.3))
+                self._leg(surf, (hind_hip[0] + 9, hind_hip[1]), 0,
+                          airborne_pose=(-0.4, 1.2))
+
+        # --- Body: fragmented angular planes ---
+        tilt_px = self.tilt * 26
+        t, b_ = body.top, body.bottom
+        l, rt = body.left, body.right
+        cx = body.centerx
+        outline = [
+            (l - 4, t + 10 + tilt_px * 0.5),          # rump top corner
+            (l + 14, t - 4 + tilt_px * 0.3),
+            (cx + 6, t + 2),
+            (rt - 10, t - 6 - tilt_px * 0.5),         # withers
+            (rt + 2, t + 8 - tilt_px * 0.5),          # chest point
+            (rt - 6, b_ - 2 - tilt_px * 0.3),
+            (cx - 4, b_ + 2),
+            (l + 6, b_ - 2 + tilt_px * 0.3),
+        ]
+        pygame.draw.polygon(surf, HORSE_LIGHT, outline)
+        # Interior facets (cubist planes in greys)
+        pygame.draw.polygon(surf, HORSE_MID, [
+            outline[0], outline[1], (cx - 8, t + 16), (l + 8, b_ - 8)])
+        pygame.draw.polygon(surf, HORSE_DARK, [
+            (cx - 8, t + 16), (cx + 6, t + 2), (cx + 10, b_ - 6),
+            (cx - 4, b_ + 2)])
+        pygame.draw.polygon(surf, HORSE_LINE, outline, 3)
+        # Facet edges (thin black interior lines)
+        pygame.draw.line(surf, HORSE_LINE, outline[1], (l + 8, b_ - 8), 2)
+        pygame.draw.line(surf, HORSE_LINE, (cx + 6, t + 2), (cx - 4, b_ + 2), 2)
+
+        # --- Neck + head: upward wedge (Guernica-like thrown-back head) ---
+        if ducking:
+            head_tip = (r.right + 22, by + 10)
+            neck_pts = [(rt - 26, by + 4), (head_tip[0], head_tip[1] - 4),
+                        (head_tip[0] - 2, head_tip[1] + 6), (rt - 24, by + 18)]
+            pygame.draw.polygon(surf, HORSE_LIGHT, neck_pts)
+            pygame.draw.polygon(surf, HORSE_LINE, neck_pts, 3)
+            eye_c = (head_tip[0] - 14, head_tip[1] - 1)
+            jaw = None
+        else:
+            top_y = by - 30 - tilt_px
+            head_tip = (rt + 16 + self.tilt * 10, top_y + 2)
+            neck_pts = [(rt - 26, by + 12), (rt - 14, by - 8),
+                        (head_tip[0] - 8, top_y), (head_tip[0], top_y + 8),
+                        (rt - 2, by + 16)]
+            pygame.draw.polygon(surf, HORSE_MID, neck_pts)
+            pygame.draw.polygon(surf, HORSE_LINE, neck_pts, 3)
+            # Open angular jaw (upward wedge mouth)
+            jaw = [(head_tip[0] - 6, top_y + 4),
+                   (head_tip[0] + 10, top_y - 6),
+                   (head_tip[0] + 10, top_y + 10)]
+            pygame.draw.polygon(surf, HORSE_LIGHT, jaw)
+            pygame.draw.polygon(surf, HORSE_LINE, jaw, 2)
+            eye_c = (head_tip[0] - 2, top_y + 2)
+        # Almond eye: outline + dot
+        pygame.draw.circle(surf, HORSE_LIGHT, eye_c, 5)
+        pygame.draw.circle(surf, HORSE_LINE, eye_c, 5, 2)
+        pygame.draw.circle(surf, HORSE_LINE, eye_c, 2)
+        # Ear: black triangle
+        pygame.draw.polygon(surf, HORSE_LINE, [
+            (eye_c[0] - 10, eye_c[1] - 4), (eye_c[0] - 4, eye_c[1] - 16),
+            (eye_c[0] - 1, eye_c[1] - 5)])
+
+        # --- Mane: black triangle spikes along the neck ---
+        if not ducking:
+            for i in range(3):
+                mx = rt - 22 + i * 9
+                my = by - 2 - i * 8 - tilt_px * (i / 3)
+                pygame.draw.polygon(surf, HORSE_LINE, [
+                    (mx, my), (mx - 8, my - 10), (mx + 3, my - 4)])
+
+        # --- Tail: angular zigzag ---
+        if self.on_ground:
+            sway = math.sin(p * 0.7) * 5
+            tail = [(l + 2, by + 4), (l - 8 + sway, by + 10),
+                    (l - 4 + sway, by + 18), (l - 14 + sway, by + 26)]
+        else:
+            tail = [(l + 2, by + 4), (l - 10, by + 4 + tilt_px),
+                    (l - 8, by + 12 + tilt_px), (l - 20, by + 14 + tilt_px)]
+        pygame.draw.lines(surf, HORSE_LINE, False, tail, 5)
 
 
 # ----------------------------------------------------------------------------
@@ -285,15 +356,21 @@ class Bush:
 
     def draw(self, surf):
         x, y = int(self.x), GROUND_Y - self.h
-        base = pygame.Rect(x, y + self.h // 3, self.w, self.h - self.h // 3)
-        pygame.draw.ellipse(surf, BUSH_DARK, base)
-        for fx, fy, fr in self.blobs:
-            pygame.draw.circle(surf, BUSH_GREEN,
-                               (x + int(fx * self.w), y + int(fy * self.h)),
-                               int(fr * self.h))
+        # Angular black shards (cubist bush)
+        pygame.draw.polygon(surf, BUSH_DARK, [
+            (x, GROUND_Y), (x + self.w // 4, y + self.h // 4),
+            (x + self.w // 2, y), (x + 3 * self.w // 4, y + self.h // 3),
+            (x + self.w, GROUND_Y)])
+        pygame.draw.polygon(surf, BUSH_GREEN, [
+            (x + 6, GROUND_Y), (x + self.w // 2, y + self.h // 5),
+            (x + self.w - 6, GROUND_Y)])
+        # White accent edges
+        pygame.draw.line(surf, BUSH_BERRY, (x + self.w // 2, y + self.h // 5),
+                         (x + self.w // 3, GROUND_Y - 4), 2)
         for fx, fy in self.berries:
-            pygame.draw.circle(surf, BUSH_BERRY,
-                               (x + int(fx * self.w), y + int(fy * self.h)), 3)
+            px_, py_ = x + int(fx * self.w), y + int(fy * self.h)
+            pygame.draw.polygon(surf, BUSH_BERRY, [
+                (px_, py_ - 3), (px_ + 3, py_ + 2), (px_ - 3, py_ + 2)])
 
 
 class Bird:
@@ -315,15 +392,23 @@ class Bird:
 
     def draw(self, surf):
         x, y = int(self.x), int(self.y)
-        pygame.draw.ellipse(surf, BIRD_COL, (x, y + 6, self.w - 10, 14))
-        pygame.draw.circle(surf, BIRD_COL, (x + self.w - 12, y + 10), 7)
-        pygame.draw.polygon(surf, (255, 180, 60), [
-            (x + self.w - 6, y + 8), (x + self.w + 4, y + 11),
-            (x + self.w - 6, y + 14)])
+        # Angular body wedge
+        body = [(x, y + 10), (x + self.w - 12, y + 4),
+                (x + self.w - 12, y + 16), (x + 6, y + 18)]
+        pygame.draw.polygon(surf, BIRD_COL, body)
+        pygame.draw.polygon(surf, (15, 15, 15), body, 2)
+        # Head: small triangle + open beak
+        pygame.draw.polygon(surf, BIRD_COL, [
+            (x + self.w - 14, y + 2), (x + self.w - 2, y + 8),
+            (x + self.w - 14, y + 16)])
+        pygame.draw.polygon(surf, (15, 15, 15), [
+            (x + self.w - 4, y + 6), (x + self.w + 6, y + 2),
+            (x + self.w - 2, y + 10)], 2)
+        # Wing: black angular flap
         wing = math.sin(self.flap) * 12
-        pygame.draw.polygon(surf, BIRD_WING, [
+        pygame.draw.polygon(surf, (15, 15, 15), [
             (x + 12, y + 10), (x + 30, y + 10), (x + 20, y + 10 - wing)])
-        pygame.draw.circle(surf, (20, 20, 20), (x + self.w - 10, y + 8), 2)
+        pygame.draw.circle(surf, (15, 15, 15), (x + self.w - 10, y + 7), 2)
 
 
 # ----------------------------------------------------------------------------
@@ -376,7 +461,17 @@ class Background:
             col = tuple(int(SKY_TOP[c] + (SKY_BOTTOM[c] - SKY_TOP[c]) * t)
                         for c in range(3))
             pygame.draw.line(surf, col, (0, i), (WIDTH, i))
-        pygame.draw.circle(surf, SUN, (WIDTH - 110, 70), 34)
+        # Bulb-eye in the sky (Guernica-style light)
+        bx, by_ = WIDTH - 110, 70
+        for a in range(12):
+            ang = a * math.tau / 12
+            pygame.draw.polygon(surf, (30, 30, 30), [
+                (bx + math.cos(ang) * 38, by_ + math.sin(ang) * 38),
+                (bx + math.cos(ang + 0.12) * 52, by_ + math.sin(ang + 0.12) * 52),
+                (bx + math.cos(ang - 0.12) * 52, by_ + math.sin(ang - 0.12) * 52)])
+        pygame.draw.circle(surf, SUN, (bx, by_), 34)
+        pygame.draw.circle(surf, (30, 30, 30), (bx, by_), 34, 3)
+        pygame.draw.circle(surf, (30, 30, 30), (bx, by_), 10)
         for cx, cy, s in self.clouds:
             for ox, oy, r in ((0, 0, 22), (18, 6, 16), (-18, 6, 16)):
                 pygame.draw.circle(surf, CLOUD_COL,
@@ -397,6 +492,8 @@ class Game:
         self.snd_jump = sfx_jump()
         self.snd_hit = sfx_hit()
         self.snd_milestone = sfx_milestone()
+        self.music = make_music()
+        self.music.play(loops=-1)
         self.highscore = load_highscore()
         self.bg = Background()
         self.reset()
